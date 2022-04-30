@@ -1,0 +1,19 @@
+[package]
+name = "syncookies"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aya = "0.10"
+aya-log = "0.1"
+syncookies-common = { path = "../syncookies-common", features=["user"] }
+anyhow = "1.0.42"
+clap = { version = "3.1", features = ["derive"] }
+log = "0.4"
+simplelog = "0.12"
+tokio = { version = "1.18", features = ["macros", "rt", "rt-multi-thread", "net", "signal"] }
+
+[[bin]]
+name = "syncookies"
+path = "src/main.rs"

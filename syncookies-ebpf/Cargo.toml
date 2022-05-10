@@ -7,6 +7,8 @@ edition = "2021"
 aya-bpf = { git = "https://github.com/aya-rs/aya", branch = "main" }
 aya-log-ebpf = { git = "https://github.com/aya-rs/aya-log", branch = "main" }
 syncookies-common = { path = "../syncookies-common" }
+memoffset = { version = "0.6", features = ["unstable_const"] }
+crc = { version = "^3.0.0", default-features = false }
 
 [[bin]]
 name = "syncookies"

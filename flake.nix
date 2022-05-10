@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-21.11";
     flake-utils.url = "github:numtide/flake-utils";
     flake-compat = {
       url = "github:edolstra/flake-compat";
@@ -12,7 +12,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
       pkgs = nixpkgs.legacyPackages.${system};
-      llvmPackages = pkgs.llvmPackages_latest;
+      llvmPackages = pkgs.llvmPackages_14;
       in
       {
         devShell = pkgs.mkShell {
@@ -25,6 +25,7 @@
             pkg-config
             libxml2
             openssl
+            bpftools
           ];
 
           shellHook = ''
@@ -32,7 +33,7 @@
             export PATH=$PATH:~/.rustup/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
           '';
 
-          RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
+          RUSTC_VERSION = "stable";
           LIBCLANG_PATH = pkgs.lib.makeLibraryPath [ llvmPackages.libclang.lib ];
           BINDGEN_EXTRA_CLANG_ARGS =
             # Includes with normal include path

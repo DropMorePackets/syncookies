@@ -383,7 +383,9 @@ impl UpdateChecksum for iphdr {
         self.check = 0;
 
         let check = sum16(ctx, ETH_HDR_LEN, self.header_length() as usize);
+        info!(ctx, "{}", check);
         let check = carry(check);
+        info!(ctx, "{}", check);
         self.check = check;
     }
 }

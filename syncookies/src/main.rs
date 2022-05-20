@@ -1,15 +1,15 @@
-use aya::{include_bytes_aligned, Bpf};
 use anyhow::Context;
 use aya::maps::perf::AsyncPerfEventArray;
 use aya::programs::{Xdp, XdpFlags};
 use aya::util::online_cpus;
+use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use bytes::BytesMut;
 use clap::Parser;
 use log::info;
 use simplelog::{ColorChoice, ConfigBuilder, LevelFilter, TermLogger, TerminalMode};
-use tokio::{signal, task};
 use syncookies_common::PacketLog;
+use tokio::{signal, task};
 
 #[derive(Debug, Parser)]
 struct Opt {

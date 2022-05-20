@@ -4,10 +4,13 @@
 
 use core::mem;
 
-use aya_bpf::{bindings::xdp_action, helpers::bpf_ktime_get_ns, macros::map, macros::xdp, memset, programs::XdpContext};
-use aya_bpf::cty::{c_int};
+use aya_bpf::{
+    bindings::xdp_action, helpers::bpf_ktime_get_ns, macros::map, macros::xdp, memset,
+    programs::XdpContext,
+};
+use aya_bpf::cty::c_int;
 use aya_bpf::maps::PerfEventArray;
-use aya_log_ebpf::{info};
+use aya_log_ebpf::info;
 use crc::*;
 use memoffset::offset_of;
 
@@ -23,9 +26,9 @@ mod bindings;
 #[allow(non_camel_case_types)]
 mod constants;
 
-
 #[map(name = "EVENTS")]
-static mut EVENTS: PerfEventArray<PacketLog> = PerfEventArray::<PacketLog>::with_max_entries(1024, 0);
+static mut EVENTS: PerfEventArray<PacketLog> =
+    PerfEventArray::<PacketLog>::with_max_entries(1024, 0);
 
 #[xdp(name = "syncookies")]
 pub fn syncookies(ctx: XdpContext) -> u32 {
@@ -46,41 +49,60 @@ fn cookie_counter() -> u32 {
 }
 
 #[inline(always)]
-fn process_tcp_syn<T: EthernetProtocol>(ctx: &XdpContext, t: &FourTuple<T>) -> Result<u32, ()> {
-    let tcp: *mut tcphdr = unsafe { mut_ptr_at(ctx, ETH_HDR_LEN + T::HEADER_LENGTH)? };
+fn process_tcp_syn<T: IPProtocol>(ctx: &XdpContext, t: &FourTuple<T>) -> Result<u32, ()> {
+    let tcp: *mut tcphdr = T::tcp(ctx)?;
 
-    info!(ctx, "before: cookie {}", u32::from_be(unsafe { *ptr_at(ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, seq))? }));
+    info!(
+        ctx,
+        "before: cookie {}",
+        u32::from_be(unsafe {
+            *ptr_at(
+                ctx,
+                ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, seq),
+            )?
+        })
+    );
 
     /* Create SYN-ACK with cookie */
-    // let cookie = t.crc32();
-    let cookie = 0; //TODO: FIX CRC32 to work with ebpf
+    let cookie = t.crc32();
     unsafe {
         (*tcp).ack_seq = (u32::from_be((*tcp).seq) + 1).to_be();
         (*tcp).seq = cookie;
         (*tcp).set_ack(1);
     }
 
-    info!(ctx, "after: cookie {}", u32::from_be(unsafe { *ptr_at(ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, seq))? }));
+    info!(
+        ctx,
+        "after: cookie {}",
+        u32::from_be(unsafe {
+            *ptr_at(
+                ctx,
+                ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, seq),
+            )?
+        })
+    );
 
-    unsafe { swap_addresses::<T>(ctx)?; }
+    unsafe {
+        swap_addresses::<T>(ctx)?;
+    }
 
+    info!(ctx, "OK TX");
     Ok(xdp_action::XDP_TX)
 }
 
 #[inline(always)]
-unsafe fn swap_addresses<T: EthernetProtocol>(ctx: &XdpContext) -> Result<(), ()> {
-    let eth: *mut ethhdr = mut_ptr_at(ctx, 0)?;
-    let ip: *mut iphdr = mut_ptr_at(ctx, ETH_HDR_LEN)?;
-    let tcp: *mut tcphdr = mut_ptr_at(ctx, ETH_HDR_LEN + T::HEADER_LENGTH)?;
+unsafe fn swap_addresses<T: IPProtocol>(ctx: &XdpContext) -> Result<(), ()> {
+    let eth = T::eth(ctx)?;
+    let ip = T::ip(ctx)?;
+    let tcp = T::tcp(ctx)?;
 
-    let ip_len = ((*ip).ihl() * 4) as u32;
-    if ip_len > MAX_CSUM_BYTES {
-        return Err(())
+    if (*ip).header_length() > MAX_CSUM_BYTES {
+        return Err(());
     }
 
     let tcp_len = ((*tcp).doff() * 4) as u32;
     if tcp_len > MAX_CSUM_BYTES {
-        return Err(())
+        return Err(());
     }
 
     let tmp_source = (*tcp).source;
@@ -88,27 +110,19 @@ unsafe fn swap_addresses<T: EthernetProtocol>(ctx: &XdpContext) -> Result<(), ()
     (*tcp).dest = tmp_source;
 
     /* Reverse IP direction */
-    let tmp_source = (*ip).saddr;
-    (*ip).saddr = (*ip).daddr;
-    (*ip).daddr = tmp_source;
+    (*ip).swap_address();
 
     /* Reverse Ethernet direction */
-    let tmp_source = (*eth).h_source;
-    (*eth).h_source = (*eth).h_dest;
-    (*eth).h_dest = tmp_source;
-
-    /* Clear IP options */
-    memset(mut_ptr_at(ctx, ETH_HDR_LEN + 1)?, (ip_len as usize - IP_HDR_LEN) as c_int, 0);
+    (*eth).swap_address();
 
     /* Update IP checksum */
-    (*ip).check = 0;
-    (*ip).check = carry(sum16(ctx, ETH_HDR_LEN, ip_len as usize));
+    (*ip).update_checksum(ctx);
 
     /* Update TCP checksum */
     (*tcp).check = 0;
     let mut tcp_csum: u32 = 0;
-    tcp_csum += sum16_32((*ip).saddr);
-    tcp_csum += sum16_32((*ip).daddr);
+    tcp_csum += T::IPHeader::sum16((*ip).source_address());
+    tcp_csum += T::IPHeader::sum16((*ip).destination_address());
     tcp_csum += 0x0600;
     tcp_csum += tcp_len << 8;
     tcp_csum += sum16(ctx, ETH_HDR_LEN + T::HEADER_LENGTH, tcp_len as usize);
@@ -145,13 +159,6 @@ fn sum16(ctx: &XdpContext, offset: usize, size: usize) -> u32 {
     s
 }
 
-/// A handy version of `sum16()` for 32-bit words.
-/// Does not actually conserve any instructions.
-#[inline(always)]
-fn sum16_32(v: u32) -> u32 {
-    (v >> 16) + (v & 0xffff)
-}
-
 /// Carry upper bits and compute one's complement for a checksum.
 #[inline(always)]
 fn carry(csum: u32) -> u16 {
@@ -161,12 +168,12 @@ fn carry(csum: u32) -> u16 {
 }
 
 #[inline(always)]
-fn process_tcp_ack<T: EthernetProtocol>(ctx: &XdpContext, x: &FourTuple<T>) -> Result<u32, ()> {
+fn process_tcp_ack<T: IPProtocol>(ctx: &XdpContext, x: &FourTuple<T>) -> Result<u32, ()> {
     //TODO: Handle ACK
     Ok(xdp_action::XDP_PASS)
 }
 
-fn read_ip<T: EthernetProtocol>(ctx: &XdpContext) -> Result<u32, ()> {
+fn read_ip<T: IPProtocol<IPHeader=T>>(ctx: &XdpContext) -> Result<u32, ()> {
     let ip_proto = u8::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + T::PROTOCOL_OFFSET)? });
 
     // We only care about TCP
@@ -174,15 +181,25 @@ fn read_ip<T: EthernetProtocol>(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
+    let ip = T::ip(&ctx)?;
     let tuple = FourTuple {
-        src_address: T::read_source_address(&ctx)?,
-        dst_address: T::read_destination_address(&ctx)?,
-        src_port: u16::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + IP_HDR_LEN + offset_of!(tcphdr, source))? }),
-        dst_port: u16::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + IP_HDR_LEN + offset_of!(tcphdr, dest))? }),
+        src_address: unsafe { (*ip).source_address() },
+        dst_address: unsafe { (*ip).destination_address() },
+        src_port: u16::from_be(unsafe {
+            *ptr_at(&ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, source))?
+        }),
+        dst_port: u16::from_be(unsafe {
+            *ptr_at(&ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, dest))?
+        }),
     };
     // info!(&ctx, "tuple {} {} {} {}", tuple.src_port, tuple.dst_port, tuple.src_address, tuple.dst_address);
 
-    let flags = u16::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, _bitfield_1))? });
+    let flags = u16::from_be(unsafe {
+        *ptr_at(
+            &ctx,
+            ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, _bitfield_1),
+        )?
+    });
     match flags & (TH_SYN | TH_ACK) {
         TH_SYN => process_tcp_syn::<T>(&ctx, &tuple),
         TH_ACK => process_tcp_ack::<T>(&ctx, &tuple),
@@ -194,16 +211,16 @@ fn try_syncookies(ctx: &XdpContext) -> Result<u32, ()> {
     let eth_proto = u16::from_be(unsafe { *ptr_at(ctx, offset_of!(ethhdr, h_proto))? });
 
     let action = match eth_proto {
-        ETH_P_IP => read_ip::<V4>(ctx)?,
-        ETH_P_IPV6 => read_ip::<V6>(ctx)?,
-        _ => return Ok(xdp_action::XDP_PASS)
+        ETH_P_IP => read_ip::<iphdr>(ctx)?,
+        ETH_P_IPV6 => read_ip::<ipv6hdr>(ctx)?,
+        _ => return Ok(xdp_action::XDP_PASS),
     };
 
     // let log_entry = PacketLog {
     //     protocol: u32::from(eth_proto),
     //     action,
     // };
-
+    //
     // unsafe {
     //     EVENTS.output(ctx, &log_entry, 0);
     // }
@@ -242,32 +259,52 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
-trait EthernetProtocol {
+trait IPProtocol {
     const PROTOCOL_OFFSET: usize;
-    const HEADER_LENGTH: usize;
+    const HEADER_LENGTH: usize = mem::size_of::<Self::IPHeader>();
     type AddressSize: Copy;
-    fn read_source_address(ctx: &XdpContext) -> Result<Self::AddressSize, ()>;
-    fn read_destination_address(ctx: &XdpContext) -> Result<Self::AddressSize, ()>;
+    type IPHeader: IPProtocol + UpdateChecksum + Swappable;
+
+    fn source_address(&self) -> Self::AddressSize;
+    fn destination_address(&self) -> Self::AddressSize;
+    fn header_length(&self) -> u32;
+
+    /// A handy version of `sum16()` for Self::AddressSize-bit words.
+    /// Does not actually conserve any instructions.
+    fn sum16(v: Self::AddressSize) -> u32;
+
     fn crc32(digest: &mut Digest<u32>, address: Self::AddressSize);
+
+    fn eth(ctx: &XdpContext) -> Result<*mut ethhdr, ()> {
+        unsafe { mut_ptr_at(ctx, 0) }
+    }
+    fn ip(ctx: &XdpContext) -> Result<*mut Self::IPHeader, ()> {
+        unsafe { mut_ptr_at(ctx, ETH_HDR_LEN) }
+    }
+    fn tcp(ctx: &XdpContext) -> Result<*mut tcphdr, ()> {
+        unsafe { mut_ptr_at(ctx, ETH_HDR_LEN + Self::HEADER_LENGTH) }
+    }
 }
 
-struct V4;
-
-struct V6;
-
-impl EthernetProtocol for V4 {
+impl IPProtocol for iphdr {
     const PROTOCOL_OFFSET: usize = offset_of!(iphdr, protocol);
-    const HEADER_LENGTH: usize = IP_HDR_LEN;
     type AddressSize = u32;
+    type IPHeader = iphdr;
 
-    #[inline(always)]
-    fn read_source_address(ctx: &XdpContext) -> Result<Self::AddressSize, ()> {
-        Ok(u32::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + offset_of!(iphdr, saddr))? }))
+    fn source_address(&self) -> Self::AddressSize {
+        self.saddr
     }
 
-    #[inline(always)]
-    fn read_destination_address(ctx: &XdpContext) -> Result<Self::AddressSize, ()> {
-        Ok(u32::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + offset_of!(iphdr, daddr))? }))
+    fn destination_address(&self) -> Self::AddressSize {
+        self.daddr
+    }
+
+    fn header_length(&self) -> u32 {
+        self.ihl() as u32 * 4
+    }
+
+    fn sum16(v: Self::AddressSize) -> u32 {
+        (v >> 16) + (v & 0xffff)
     }
 
     fn crc32(digest: &mut Digest<u32>, address: Self::AddressSize) {
@@ -275,19 +312,25 @@ impl EthernetProtocol for V4 {
     }
 }
 
-impl EthernetProtocol for V6 {
+impl IPProtocol for ipv6hdr {
     const PROTOCOL_OFFSET: usize = offset_of!(ipv6hdr, nexthdr);
-    const HEADER_LENGTH: usize = IPV6_HDR_LEN;
     type AddressSize = u128;
+    type IPHeader = ipv6hdr;
 
-    #[inline(always)]
-    fn read_source_address(ctx: &XdpContext) -> Result<Self::AddressSize, ()> {
-        Ok(u128::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + offset_of!(ipv6hdr, saddr))? }))
+    fn source_address(&self) -> Self::AddressSize {
+        unsafe { u128::from_be_bytes(self.saddr.in6_u.u6_addr8) }
     }
 
-    #[inline(always)]
-    fn read_destination_address(ctx: &XdpContext) -> Result<Self::AddressSize, ()> {
-        Ok(u128::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + offset_of!(ipv6hdr, daddr))? }))
+    fn destination_address(&self) -> Self::AddressSize {
+        unsafe { u128::from_be_bytes(self.daddr.in6_u.u6_addr8) }
+    }
+
+    fn header_length(&self) -> u32 {
+        mem::size_of::<Self::IPHeader>() as u32
+    }
+
+    fn sum16(v: Self::AddressSize) -> u32 {
+        ((v >> 32) + (v & 0xffffffff) + (v >> 16) + (v & 0xffff)) as u32
     }
 
     fn crc32(digest: &mut Digest<u32>, address: Self::AddressSize) {
@@ -297,7 +340,7 @@ impl EthernetProtocol for V6 {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-struct FourTuple<T: EthernetProtocol> {
+struct FourTuple<T: IPProtocol> {
     pub src_address: T::AddressSize,
     pub dst_address: T::AddressSize,
     pub src_port: u16,
@@ -307,7 +350,7 @@ struct FourTuple<T: EthernetProtocol> {
 const CRC32: Crc<u32> = Crc::<u32>::new(&crc::CRC_32_CKSUM);
 const COOKIE_SEED: u32 = 42;
 
-impl<T: EthernetProtocol> FourTuple<T> {
+impl<T: IPProtocol> FourTuple<T> {
     #[inline(always)]
     fn crc32(&self) -> u32 {
         let mut digest = CRC32.digest();
@@ -319,3 +362,66 @@ impl<T: EthernetProtocol> FourTuple<T> {
     }
 }
 
+
+// -----------------------------
+
+trait UpdateChecksum {
+    fn update_checksum(&mut self, ctx: &XdpContext) {}
+}
+
+impl UpdateChecksum for iphdr {
+    fn update_checksum(&mut self, ctx: &XdpContext) {
+        /* Clear IP options */
+        unsafe {
+            memset(
+                mut_ptr_at(ctx, ETH_HDR_LEN + 1).unwrap(),
+                (self.header_length() as usize - mem::size_of::<iphdr>()) as c_int,
+                0,
+            )
+        };
+
+        self.check = 0;
+
+        let check = sum16(ctx, ETH_HDR_LEN, self.header_length() as usize);
+        let check = carry(check);
+        self.check = check;
+    }
+}
+
+impl UpdateChecksum for ipv6hdr {}
+
+// -----------------------------
+
+trait Swappable {
+    fn swap_address(&mut self);
+}
+
+impl Swappable for iphdr {
+    fn swap_address(&mut self) {
+        unsafe {
+            let tmp_source = self.saddr;
+            self.saddr = self.daddr;
+            self.daddr = tmp_source;
+        }
+    }
+}
+
+impl Swappable for ipv6hdr {
+    fn swap_address(&mut self) {
+        unsafe {
+            let tmp_source = self.saddr;
+            self.saddr = self.daddr;
+            self.daddr = tmp_source;
+        }
+    }
+}
+
+impl Swappable for ethhdr {
+    fn swap_address(&mut self) {
+        unsafe {
+            let tmp_source = self.h_source;
+            self.h_source = self.h_dest;
+            self.h_dest = tmp_source;
+        }
+    }
+}

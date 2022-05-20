@@ -1,4 +1,4 @@
-use crate::{ethhdr, iphdr, ipv6hdr, tcphdr};
+use crate::{ethhdr, tcphdr};
 use core::mem;
 
 pub const ETH_P_IP: u16 = 0x0800;

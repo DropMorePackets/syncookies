@@ -105,9 +105,7 @@ unsafe fn swap_addresses<T: IPProtocol>(ctx: &XdpContext) -> Result<(), ()> {
         return Err(());
     }
 
-    let tmp_source = (*tcp).source;
-    (*tcp).source = (*tcp).dest;
-    (*tcp).dest = tmp_source;
+    core::mem::swap(&mut (*tcp).source, &mut (*tcp).dest);
 
     /* Reverse IP direction */
     (*ip).swap_address();
@@ -174,35 +172,35 @@ fn process_tcp_ack<T: IPProtocol>(ctx: &XdpContext, x: &FourTuple<T>) -> Result<
 }
 
 fn read_ip<T: IPProtocol<IPHeader=T>>(ctx: &XdpContext) -> Result<u32, ()> {
-    let ip_proto = u8::from_be(unsafe { *ptr_at(&ctx, ETH_HDR_LEN + T::PROTOCOL_OFFSET)? });
+    let ip_proto = u8::from_be(unsafe { *ptr_at(ctx, ETH_HDR_LEN + T::PROTOCOL_OFFSET)? });
 
     // We only care about TCP
     if ip_proto != IPPROTO_TCP {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let ip = T::ip(&ctx)?;
+    let ip = T::ip(ctx)?;
     let tuple = FourTuple {
         src_address: unsafe { (*ip).source_address() },
         dst_address: unsafe { (*ip).destination_address() },
         src_port: u16::from_be(unsafe {
-            *ptr_at(&ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, source))?
+            *ptr_at(ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, source))?
         }),
         dst_port: u16::from_be(unsafe {
-            *ptr_at(&ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, dest))?
+            *ptr_at(ctx, ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, dest))?
         }),
     };
     // info!(&ctx, "tuple {} {} {} {}", tuple.src_port, tuple.dst_port, tuple.src_address, tuple.dst_address);
 
     let flags = u16::from_be(unsafe {
         *ptr_at(
-            &ctx,
+            ctx,
             ETH_HDR_LEN + T::HEADER_LENGTH + offset_of!(tcphdr, _bitfield_1),
         )?
     });
     match flags & (TH_SYN | TH_ACK) {
-        TH_SYN => process_tcp_syn::<T>(&ctx, &tuple),
-        TH_ACK => process_tcp_ack::<T>(&ctx, &tuple),
+        TH_SYN => process_tcp_syn::<T>(ctx, &tuple),
+        TH_ACK => process_tcp_ack::<T>(ctx, &tuple),
         _ => Ok(xdp_action::XDP_PASS),
     }
 }
@@ -400,30 +398,18 @@ trait Swappable {
 
 impl Swappable for iphdr {
     fn swap_address(&mut self) {
-        unsafe {
-            let tmp_source = self.saddr;
-            self.saddr = self.daddr;
-            self.daddr = tmp_source;
-        }
+        core::mem::swap(&mut self.saddr, &mut self.daddr);
     }
 }
 
 impl Swappable for ipv6hdr {
     fn swap_address(&mut self) {
-        unsafe {
-            let tmp_source = self.saddr;
-            self.saddr = self.daddr;
-            self.daddr = tmp_source;
-        }
+        core::mem::swap(&mut self.saddr, &mut self.daddr);
     }
 }
 
 impl Swappable for ethhdr {
     fn swap_address(&mut self) {
-        unsafe {
-            let tmp_source = self.h_source;
-            self.h_source = self.h_dest;
-            self.h_dest = tmp_source;
-        }
+        core::mem::swap(&mut self.h_source, &mut self.h_dest);
     }
 }

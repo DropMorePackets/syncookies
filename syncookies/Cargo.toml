@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 aya = "0.10"
-aya-log = "0.1"
+aya-log = { git = "https://github.com/aya-rs/aya-log", branch = "main" }
 syncookies-common = { path = "../syncookies-common", features=["user"] }
 anyhow = "1.0.42"
 clap = { version = "3.1", features = ["derive"] }

@@ -123,7 +123,7 @@ unsafe fn swap_addresses<T: IPProtocol>(ctx: &XdpContext) -> Result<(), ()> {
     tcp_csum += T::IPHeader::sum16((*ip).destination_address());
     tcp_csum += 0x0600;
     tcp_csum += tcp_len << 8;
-    tcp_csum += sum16(ctx, ETH_HDR_LEN + T::HEADER_LENGTH, tcp_len as usize);
+    tcp_csum += sum16(&*tcp);
     (*tcp).check = carry(tcp_csum);
 
     Ok(())
@@ -132,28 +132,16 @@ unsafe fn swap_addresses<T: IPProtocol>(ctx: &XdpContext) -> Result<(), ()> {
 const MAX_CSUM_WORDS: u32 = 32;
 const MAX_CSUM_BYTES: u32 = MAX_CSUM_WORDS * 2;
 
-/// Calculate sum of 16-bit words from `data` of `size` bytes,
-/// Size is assumed to be even, from 0 to MAX_CSUM_BYTES.
+/// Calculate sum of 16-bit words from `val`,
 #[inline(always)]
-fn sum16(ctx: &XdpContext, offset: usize, size: usize) -> u32 {
-    let start = ctx.data();
-    let end = ctx.data_end();
+fn sum16<T: bytemuck::NoUninit>(val: &T) -> u32 {
+    assert!(core::mem::size_of_val(val) % 2 == 0);
 
     let mut s: u32 = 0;
-    for i in 0..MAX_CSUM_WORDS {
-        let pos = start + offset + 2 * i as usize;
-        if 2 * i as usize >= size {
-            /* normal exit */
-            return s;
-        }
-
-        if pos + 1 + 1 > end {
-            return 0; /* should be unreachable */
-        }
-
-        s += unsafe { *(pos as *const u16) } as u32;
+    for bytes in bytemuck::bytes_of(val).chunks_exact(2) {
+        let i = u16::from_ne_bytes([bytes[0], bytes[1]]);
+        s += i as u32;
     }
-
     s
 }
 
@@ -380,10 +368,8 @@ impl UpdateChecksum for iphdr {
 
         self.check = 0;
 
-        let check = sum16(ctx, ETH_HDR_LEN, self.header_length() as usize);
-        info!(ctx, "{}", check);
+        let check = sum16(self);
         let check = carry(check);
-        info!(ctx, "{}", check);
         self.check = check;
     }
 }

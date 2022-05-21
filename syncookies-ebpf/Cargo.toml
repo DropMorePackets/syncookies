@@ -9,6 +9,7 @@ aya-log-ebpf = { git = "https://github.com/aya-rs/aya-log", branch = "main" }
 syncookies-common = { path = "../syncookies-common" }
 memoffset = { version = "0.6", features = ["unstable_const"] }
 crc = { git = "https://github.com/fionera/crc-rs", branch = "master" }
+bytemuck = { version = "1.9.1", features = ["derive"] }
 
 [[bin]]
 name = "syncookies"

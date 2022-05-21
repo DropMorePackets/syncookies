@@ -139,8 +139,7 @@ fn sum16<T: bytemuck::NoUninit>(val: &T) -> u32 {
     assert!(core::mem::size_of_val(val) % 2 == 0);
 
     let mut s: u32 = 0;
-    for bytes in bytemuck::bytes_of(val).chunks_exact(2) {
-        let i = u16::from_ne_bytes([bytes[0], bytes[1]]);
+    for &i in bytemuck::cast_slice::<_, u16>(&[*val]) {
         s += i as u32;
     }
     s

@@ -136,13 +136,10 @@ const MAX_CSUM_BYTES: u32 = MAX_CSUM_WORDS * 2;
 /// Will panic if T is not a multiple of 16 bits wide.
 #[inline(always)]
 fn sum16<T: bytemuck::NoUninit>(val: &T) -> u32 {
-    assert!(core::mem::size_of_val(val) % 2 == 0);
-
-    let mut s: u32 = 0;
-    for &i in bytemuck::cast_slice::<_, u16>(&[*val]) {
-        s += i as u32;
-    }
-    s
+    bytemuck::cast_slice(core::slice::from_ref(val))
+        .iter()
+        .map(|&i: &u16| i as u32)
+        .sum()
 }
 
 /// Carry upper bits and compute one's complement for a checksum.

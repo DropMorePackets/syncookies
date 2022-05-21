@@ -132,7 +132,8 @@ unsafe fn swap_addresses<T: IPProtocol>(ctx: &XdpContext) -> Result<(), ()> {
 const MAX_CSUM_WORDS: u32 = 32;
 const MAX_CSUM_BYTES: u32 = MAX_CSUM_WORDS * 2;
 
-/// Calculate sum of 16-bit words from `val`,
+/// Calculate sum of 16-bit words from `val`.
+/// Will panic if T is not a multiple of 16 bits wide.
 #[inline(always)]
 fn sum16<T: bytemuck::NoUninit>(val: &T) -> u32 {
     assert!(core::mem::size_of_val(val) % 2 == 0);
